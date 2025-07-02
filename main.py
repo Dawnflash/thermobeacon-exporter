@@ -26,6 +26,10 @@ humidity_gauge = Gauge(
     "sensor_humidity_percent", "Humidity from BLE sensor", ["address"]
 )
 
+voltage_gauge = Gauge("sensor_voltage", "Voltage [V] from BLE sensor", ["address"])
+
+uptime_gauge = Gauge("sensor_uptime_seconds", "Uptime [s] of BLE sensor", ["address"])
+
 location_gauge = Gauge(
     "sensor_location_info",
     "ThermoBeacon location metadata",
@@ -33,19 +37,32 @@ location_gauge = Gauge(
 )
 
 
+class SensorData:
+    def __init__(
+        self,
+        temperature: float,
+        humidity: float,
+        voltage: float,
+        uptime_seconds: int,
+    ):
+        self.temperature = temperature
+        self.humidity = humidity
+        self.voltage = voltage
+        self.uptime_seconds = uptime_seconds
+
+
 # === Decoder ===
-def decode_packet(data: bytes):
+def decode_packet(data: bytes) -> SensorData:
     """
-    Decode raw bytes to temperature (°C) and humidity (%RH)
+    Decode raw bytes to sensor data.
     """
 
-    temperature_raw = int.from_bytes(data[10:12], "little")
-    humidity_raw = int.from_bytes(data[12:14], "little")
+    voltage = int.from_bytes(data[8:10], "little") / 1000.0  # Convert mV to V
+    temperature = int.from_bytes(data[10:12], "little", signed=True) / 16.0
+    humidity = int.from_bytes(data[12:14], "little") / 16.0
+    uptime_seconds = int.from_bytes(data[14:18], "little")
 
-    temperature = temperature_raw / 16.0
-    humidity = humidity_raw / 16.0
-
-    return temperature, humidity
+    return SensorData(temperature, humidity, voltage, uptime_seconds)
 
 
 # === Scanner callback ===
@@ -64,18 +81,21 @@ def detection_callback(device, advertisement_data):
                 mfg_data.hex(),
             )
             return
-        temperature, humidity = decode_packet(mfg_data)
-        if temperature is not None and humidity is not None:
-            logging.info(
-                "ADV (%dB) [%s]: %s -> %.1f°C, %.1f%% RH",
-                len(mfg_data),
-                device.address,
-                mfg_data.hex(),
-                temperature,
-                humidity,
-            )
-            temperature_gauge.labels(address=device.address).set(temperature)
-            humidity_gauge.labels(address=device.address).set(humidity)
+        sensor_data = decode_packet(mfg_data)
+        logging.info(
+            "ADV (%dB) [%s]: %s -> %.1f°C, %.1f%% RH, %.3fV, %ds uptime",
+            len(mfg_data),
+            device.address,
+            mfg_data.hex(),
+            sensor_data.temperature,
+            sensor_data.humidity,
+            sensor_data.voltage,
+            sensor_data.uptime_seconds,
+        )
+        temperature_gauge.labels(address=device.address).set(sensor_data.temperature)
+        humidity_gauge.labels(address=device.address).set(sensor_data.humidity)
+        voltage_gauge.labels(address=device.address).set(sensor_data.voltage)
+        uptime_gauge.labels(address=device.address).set(sensor_data.uptime_seconds)
 
 
 def set_location_gauge():
